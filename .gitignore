@@ -1,0 +1,4 @@
+*.pyc
+jetrics.egg-info/*
+.idea/*
+venv/*

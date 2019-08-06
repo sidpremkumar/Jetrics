@@ -6,11 +6,14 @@ import logging
 # 3rd Party Modules
 import jira
 
+# Local Modules
+from Jetrics.config import config
 # Global Variables
-create_date = "createdDate > '2019/06/1'"
-projects_in = "Project in ('FACTORY')"
+create_date = f"createdDate > {config['start_date']}"
+projects_in = f"Project in {config['projects']}"
 standard_jql = f"{create_date} AND {projects_in}"
 log = logging.getLogger(__name__)
+
 
 def get_jira_client(verify=True):
     """
@@ -30,6 +33,22 @@ def get_jira_client(verify=True):
 
     client = jira.client.JIRA(**jira_info)
     return client
+
+
+def get_average(differences):
+    """
+    Helper function to calculate average days from list of time.
+
+
+    :param List differences: List of time differences
+    :return: Average days
+    :rtype: Int
+    """
+    sum = timedelta(days=0)
+    for difference in differences:
+        sum += difference
+    avg = (sum.total_seconds()/60/60/24)/len(differences)
+    return avg
 
 
 def current_work_in_progress(client):
@@ -74,16 +93,13 @@ def average_code_review_time(client):
         if start_time and end_time:
             if start_time < end_time and end_time > start_time:
                 differences.append(end_time - start_time)
-
+                start_time = None
+                end_time = None
     if len(differences) < 1:
         log.warning(f'No issues have transitioned in/out of Code Review')
         return -1
 
-    sum = timedelta(days=0)
-    for difference in differences:
-        sum += difference
-    average_days = (sum.total_seconds()/60/60/24)/len(differences)
-    return average_days
+    return get_average(differences)
 
 
 def average_code_review_to_qe(client):
@@ -108,22 +124,22 @@ def average_code_review_to_qe(client):
         for history in changelog.histories:
             for item in history.items:
                 if item.field == 'status':
-                    if item.toString == 'Code Review' and not end_time:
+                    if item.toString == 'Code Review' and item.fromString == 'In Progress' and not end_time:
                         start_time = datetime.strptime(history.created[:-5], '%Y-%m-%dT%H:%M:%S.%f')
-                    elif item.toString == 'Testing' or item.toString == 'Merged' and start_time:
+                    elif (item.toString == 'Testing' or item.toString == 'Merged') and item.fromString == 'Code Review' \
+                            and start_time:
                         end_time = datetime.strptime(history.created[:-5], '%Y-%m-%dT%H:%M:%S.%f')
         if start_time and end_time:
             if start_time < end_time and end_time > start_time:
                 differences.append(end_time - start_time)
+                start_time = None
+                end_time = None
 
     if len(differences) < 1:
         log.warning(f'No issues have transitioned from Code Review -> Merged/Testing')
         return -1
-    sum = timedelta(days=0)
-    for difference in differences:
-        sum += difference
-    average_days = (sum.total_seconds()/60/60/24)/len(differences)
-    return average_days
+
+    return get_average(differences)
 
 
 def time_to_deploy(client):
@@ -154,15 +170,14 @@ def time_to_deploy(client):
         if start_time and end_time:
             if start_time < end_time and end_time > start_time:
                 differences.append(end_time - start_time)
+                start_time = None
+                end_time = None
 
     if len(differences) < 1:
         log.warning(f'No issues have transitioned from Release Pending -> Closed')
         return -1
-    sum = timedelta(days=0)
-    for difference in differences:
-        sum += difference
-    average_days = (sum.total_seconds()/60/60/24)/len(differences)
-    return average_days
+
+    return get_average(differences)
 
 
 def cycle_time(client):
@@ -198,15 +213,14 @@ def cycle_time(client):
         if start_time and end_time:
             if start_time < end_time and end_time > start_time:
                 differences.append(end_time - start_time)
+                start_time = None
+                end_time = None
 
     if len(differences) < 1:
         log.warning(f'No Bugs have transitioned from In-Progress -> Closed/Resolved')
         bug_average_days = -1
     else:
-        sum = timedelta(days=0)
-        for difference in differences:
-            sum += difference
-        bug_average_days = (sum.total_seconds() / 60 / 60 / 24) / len(differences)
+        bug_average_days = get_average(differences)
 
     # No lets do the same thing for Stories
     jql = f"{standard_jql} AND type in (Story)"
@@ -232,20 +246,19 @@ def cycle_time(client):
         if start_time and end_time:
             if start_time < end_time and end_time > start_time:
                 differences.append(end_time - start_time)
+                start_time = None
+                end_time = None
 
     if len(differences) < 1:
         log.warning(f'No Stories have transitioned from In-Progress -> Closed/Resolved')
         story_average_days = -1
     else:
-        sum = timedelta(days=0)
-        for difference in differences:
-            sum += difference
-        story_average_days = (sum.total_seconds() / 60 / 60 / 24) / len(differences)
+        story_average_days = get_average(differences)
 
     return bug_average_days, story_average_days
 
 
-def re_testing_qe_gaps(client):
+def qe_gaps(client):
     """
     Function to calculate QE Gaps.
 
@@ -301,7 +314,7 @@ def work_outside_of_quarterly_planning(client, quarter_label):
     """
     jql = f"{standard_jql} AND type not in (Bug, Ticket) and " \
         f"(issueFunction in linkedIssuesOf('type = epic and " \
-        f"labels = {quarter_label}', 'is epic of''))"
+        f"labels = {quarter_label}', 'is epic of'))"
     return len(client.search_issues(jql))
 
 
@@ -312,7 +325,7 @@ def passing_qe(client):
     * Testing -> In Progress/Release Pending (None QE)
 
     :param jira.client.JIRA client: JIRA Client
-    :return: Average number of days a issue stays in said critera
+    :return: Average number of days a issue stays in said criteria
     :rtype: Int
     """
     jql = f"{standard_jql} AND type in (Bug, Story)"
@@ -328,7 +341,7 @@ def passing_qe(client):
         for history in changelog.histories:
             for item in history.items:
                 if item.field == 'status':
-                    if issue.fields.project.key in ['FACTORY', 'BST', 'COMPOSE', 'NOS']: #TODO: THIS IS WITHOUT QE
+                    if issue.fields.project.key not in ['FACTORY', 'BST', 'COMPOSE', 'NOS']:
                         # If this is QE
                         if item.toString == 'Merged' and not end_time:
                             start_time = datetime.strptime(history.created[:-5], '%Y-%m-%dT%H:%M:%S.%f')
@@ -351,10 +364,7 @@ def passing_qe(client):
         log.warning(f'No issues could be found for function passing_qe')
         return -1
     else:
-        sum = timedelta(days=0)
-        for difference in differences:
-            sum += difference
-        return (sum.total_seconds() / 60 / 60 / 24) / len(differences)
+        return get_average(differences)
 
 
 def deferred_or_declined(client):
@@ -369,7 +379,7 @@ def deferred_or_declined(client):
     deferred_issues = len(client.search_issues(jql))
     if deferred_issues == 0:
         log.warning(f'No deferred issues could be found for JQL: {jql}')
-    jql = f"{standard_jql} AND resolution = 'Won’t Fix'"
+    jql = f"{standard_jql} AND resolution = \"Won't Fix\""
     declined_issues = len(client.search_issues(jql))
     if declined_issues == 0:
         log.warning(f'No declined issues could be found for JQL: {jql}')
